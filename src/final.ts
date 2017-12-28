@@ -326,6 +326,11 @@ app.post("/transactions", (req: express.Request, res: express.Response) => {
   const recipientAddress = req.body.recipientAddress;
   const value = Number(req.body.value);
 
+  // todo possible improvement. check valid addresses
+  // check sender balance
+  // another thing, payment request, that prepares the transaction and sends it only if sender approves
+  // private key for authentication
+
   if (!senderAddress || !recipientAddress || !value)  {
     res.json("Invalid parameters!");
     res.status(500);
@@ -342,6 +347,7 @@ app.get("/nodes", (req: express.Request, res: express.Response) => {
 });
 
 app.post("/nodes", (req: express.Request, res: express.Response) => {
+  // register a new node 
   const id = req.body.id;
   const url = new URL(req.body.url);
 
