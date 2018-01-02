@@ -21,9 +21,21 @@ import * as parseArgs from "minimist";
 // 2. validate address exists and registered before sending to it - done
 // 3. create personal names for the addresses (ohads-personal) - done 
 
+export class PublicData{
+    public blockchain:  Array<Block>;
+    public addresses:  Array<Address>;
+
+    constructor(blocks: Array<Block>, addresses: Array<Address>){
+        this.blockchain = blocks;
+        this.addresses = addresses;
+    }
+}
+
+
 export class Address {
   public publicKey: string;
   public prettyName: string;
+  public date: number;
 
   // private privateKey: string,
   constructor(prettyName?: string, publicKey?: string){
@@ -35,7 +47,8 @@ export class Address {
     if (publicKey){
         this.publicKey = publicKey
     }else{
-        this.publicKey = uuidv4()
+        this.publicKey = uuidv4();
+        this.date = Blockchain.now();
     }
 
   }
@@ -52,9 +65,8 @@ export class Address {
     return this.prettyName || this.publicKey
   }
 
-
   public isSameAddress(addressToMatch: Address) {
-      return ((thi.publicKey == addressToMatch.publicKey) || (this.prettyName == addressToMatch.prettyName))
+      return ((this.publicKey == addressToMatch.publicKey) || (this.prettyName == addressToMatch.prettyName))
   }
 
 }
@@ -155,7 +167,7 @@ export class Blockchain {
   // Loads the blockchain from the disk.
   private load() {
     try {
-      const data = JSON.parse(fs.readFileSync(this.storagePath, "utf8"));
+      const data = this.getAllPublicData();
       const blocks = data['blockchain'];
       const addresses = data['addresses'];
       this.blocks = deserialize<Block[]>(Block, blocks);
@@ -226,13 +238,15 @@ export class Blockchain {
 
   // Receives candidate blockchains, verifies them, and if a longer and valid alternative is found - uses it to replace
   // our own.
-  public consensus(blockchains: Array<Array<Block>>): boolean {
+  public consensus(blockchains: Array<PublicData>): boolean {
+
     // Iterate over the proposed candidates and find the longest, valid, candidate.
     let maxLength: number = 0;
     let bestCandidateIndex: number = -1;
 
     for (let i = 0; i < blockchains.length; ++i) {
-      const candidate = blockchains[i];
+      const candidate = blockchains[i].blockchain;
+      const addresses = blockchains[i].addresses;
 
       // Don't bother validating blockchains shorther than the best candidate so far.
       if (candidate.length <= maxLength) {
@@ -245,10 +259,11 @@ export class Blockchain {
         bestCandidateIndex = i;
       }
     }
-
+    // todo, figure out consensus algorithm for addresses
+      // possibly merge all address. if duplicate, choose oldest one
     // Compare the candidate and consider to use it.
     if (bestCandidateIndex !== -1 && (maxLength > this.blocks.length || !Blockchain.verify(this.blocks))) {
-      this.blocks = blockchains[bestCandidateIndex];
+      this.blocks = blockchains[bestCandidateIndex].blockchain;
       this.save();
 
       return true;
@@ -306,8 +321,8 @@ export class Blockchain {
         throw Error('failed to find recipient Address!')
     }
 
-    if (senderAddressObj == recipientAddressObj){
-        throw Error('sending money to yourself is useless!')
+    if (senderAddressObj.publicKey == recipientAddressObj.publicKey){
+        throw Error('sending money to yourself is useless!' + senderAddressObj.publicKey + ' == ' + recipientAddressObj.publicKey)
     }
 
     return {
@@ -360,6 +375,19 @@ export class Blockchain {
   public static now(): number {
     return Math.round(new Date().getTime() / 1000);
   }
+
+  public addANewAddress(address: Address): boolean{
+      /// todo. a smarter push that validates existing pretty name to ensure no duplicates
+      this.addresses.push(address);
+      this.save();
+
+      return true
+  }
+
+  public getAllPublicData() {
+      return JSON.parse(fs.readFileSync(this.storagePath, "utf8"));
+  }
+
 }
 
 // Web server:
@@ -373,14 +401,21 @@ const blockchain = new Blockchain(nodeId);
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error(err.stack);
-
-  res.status(500);
+    console.error(err.stack);
+    res.status(500);
 });
 
 // Show all the blocks.
 app.get("/blocks", (req: express.Request, res: express.Response) => {
   res.json(serialize(blockchain.blocks));
+});
+
+// Show all the blockchain data.
+app.get("/data", (req: express.Request, res: express.Response) => {
+    // todo, better to read from memory instead from disk
+
+    const data = blockchain.getAllPublicData();
+    res.json(serialize(data));
 });
 
 // Show specific block.
@@ -437,7 +472,7 @@ app.post("/transactions", (req: express.Request, res: express.Response) => {
   blockchain.submitTransaction(result.senderAddressObj, result.recipientAddressObj, value);
 
 
-  res.json(`Transaction from ${result.senderAddressObj.mostPrettyName()} to ${result.recipientAddressObj.mostPrettyName()} was added successfully`);
+  res.json(`Sent ${value} units from ${result.senderAddressObj.mostPrettyName()} to ${result.recipientAddressObj.mostPrettyName()} was added successfully`);
 });
 
 app.get("/nodes", (req: express.Request, res: express.Response) => {
@@ -467,7 +502,7 @@ app.post("/nodes", (req: express.Request, res: express.Response) => {
 
 app.put("/nodes/consensus", (req: express.Request, res: express.Response) => {
   // Fetch the state of the other nodes.
-  const requests = blockchain.nodes.toArray().map(node => axios.get(`${node.url}blocks`));
+  const requests = blockchain.nodes.toArray().map(node => axios.get(`${node.url}data`));
 
   // todo, also sync addresses , not just blocks
   if (requests.length === 0) {
@@ -478,7 +513,13 @@ app.put("/nodes/consensus", (req: express.Request, res: express.Response) => {
   }
 
   axios.all(requests).then(axios.spread((...blockchains) => {
-    if (blockchain.consensus(blockchains.map(res => deserialize<Block[]>(Block, res.data)))) {
+    if (blockchain.consensus(blockchains.map(res =>
+         new PublicData(
+              deserialize<Block[]>(Block, res.data.blockchain),
+              deserialize<Address[]>(Address, res.data.addresses)
+         )
+    )))
+    {
       res.json(`Node ${nodeId} has reached a consensus on a new state.`);
     } else {
       res.json(`Node ${nodeId} hasn't reached a consensus on the existing state.`);
@@ -503,9 +544,8 @@ app.put('/address', (req: express.Request, res: express.Response) => {
     const prettyName = req.body.prettyName;
     const address = new Address(prettyName);
 
-    /// todo. a smarter push that validates existing pretty name to ensure no duplicates
-    blockchain.addresses.push(address);
-
+    const result = blockchain.addANewAddress(address);
+    // todo, consider result
     res.json(`added a new address ${address.publicKey} with a pretty name of ${address.prettyName}.`);
 
     res.status(200);

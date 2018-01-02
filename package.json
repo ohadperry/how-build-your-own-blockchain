@@ -12,7 +12,8 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "build": "echo \"running build using tsc\" && tsc",
-    "compile": "npm run build"
+    "compile": "npm run build",
+    "pretty_name_scenario": "cd src; ./14_pretty_name_addresses.sh"
   },
   "dependencies": {
     "@types/axios": "^0.14.0",
